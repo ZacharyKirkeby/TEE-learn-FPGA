@@ -46,10 +46,28 @@ module FemtoRV32(
    input 	 mem_wbusy, // asserted if memory is busy writing value
 
    input 	 reset      // set to 0 to reset the processor
+
+   output        mem_violation // illegal TEE access
+   output        uart_output   // logging
 );
 
    parameter RESET_ADDR       = 32'h00000000;
    parameter ADDR_WIDTH       = 24;
+
+   // TEE Parameters
+   parameter TEE_START        = 32'h00300000;
+   parameter TEE_END          = 32'h00400000;
+
+/***************************************************************************/
+ // TEE (i even made the silly box
+ /***************************************************************************/
+
+ reg is_tee;
+ reg is_violation;
+
+ wire is_tee_zone = (mem_addr >= TEE_START) && (mem_addr < TEE_END);
+ wire violations = is_tee_zone && !is_tee && (state[EXECUTE_bit] && (isLoad || isStore));
+ assign violations = is_violation;
 
  /***************************************************************************/
  // Instruction decoding.
@@ -158,6 +176,7 @@ module FemtoRV32(
 	    aluShamt <= aluIn2[4:0];
 	 end
       end
+      // add tee work
 
 `ifdef NRV_TWOLEVEL_SHIFTER
       else if(|aluShamt[4:2]) begin // Shift by 4
@@ -197,6 +216,7 @@ module FemtoRV32(
    reg  [ADDR_WIDTH-1:0] PC; // The program counter.
    reg  [31:2] instr;        // Latched instruction. Note that bits 0 and 1 are
                              // ignored (not used in RV32I base instr set).
+			    
 
    wire [ADDR_WIDTH-1:0] PCplus4 = PC + 4;
 
@@ -230,6 +250,8 @@ module FemtoRV32(
       (isAUIPC             ? PCplusImm  : 32'b0) |  // AUIPC
       (isJALR   | isJAL    ? PCplus4    : 32'b0) |  // JAL, JALR
       (isLoad              ? LOAD_data  : 32'b0) ;  // Load
+      (isTEEEnter          ? {31'b0, is_tee} : 32'b0) | // TEE Enter return
+      (isTEEExit           ? {31'b0, is_tee} : 32'b0) ; // TEE Exit return
       
    /* verilator lint_on WIDTH */
 

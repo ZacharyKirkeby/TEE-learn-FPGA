@@ -45,29 +45,54 @@ module FemtoRV32(
    input 	 mem_rbusy, // asserted if memory is busy reading value
    input 	 mem_wbusy, // asserted if memory is busy writing value
 
-   input 	 reset      // set to 0 to reset the processor
+   output        mem_violation, // illegal TEE access
+   output        uart_output,   // logging
 
-   output        mem_violation // illegal TEE access
-   output        uart_output   // logging
+   input         reset       // set to 0 to reset the processor
+
 );
 
    parameter RESET_ADDR       = 32'h00000000;
    parameter ADDR_WIDTH       = 24;
 
    // TEE Parameters
-   parameter TEE_START        = 32'h00300000;
-   parameter TEE_END          = 32'h00400000;
+   parameter TEE_START        = 32'h300000;
+   parameter TEE_END          = 32'h400000;
 
 /***************************************************************************/
  // TEE (i even made the silly box
  /***************************************************************************/
+// TEE state register
+(* keep = "true" *) reg is_tee;
+(* keep = "true" *) reg is_violation;
 
- reg is_tee;
- reg is_violation;
+// Check if memory address is in the TEE zone
+wire is_tee_zone = (mem_addr >= TEE_START) && (mem_addr < TEE_END);
 
- wire is_tee_zone = (mem_addr >= TEE_START) && (mem_addr < TEE_END);
- wire violations = is_tee_zone && !is_tee && (state[EXECUTE_bit] && (isLoad || isStore));
- assign violations = is_violation;
+// Detect illegal access: Memory access to TEE zone when not in TEE mode
+// Only trigger during actual memory operations, not instruction fetches
+wire violation = is_tee_zone && !is_tee && state[EXECUTE_bit] && (isLoad || isStore);
+
+// Connect to module output - this signal will be connected to LEDs for warning
+assign mem_violation = is_violation;
+
+// Update TEE state registers
+always @(posedge clk) begin
+   if(!reset) begin
+      is_tee <= 1'b0;
+      is_violation <= 1'b0;
+   end else begin
+      // Set violation flag when illegal access is detected
+      if(violation) begin
+         is_violation <= 1'b1;
+      end
+
+      // Allow clearing the violation flag by writing to a specific address
+      if(state[EXECUTE_bit] && isStore && mem_addr == 32'h400004 && mem_wdata == 0) begin
+         is_violation <= 1'b0;
+      end
+   end
+end
 
  /***************************************************************************/
  // Instruction decoding.
@@ -250,8 +275,6 @@ module FemtoRV32(
       (isAUIPC             ? PCplusImm  : 32'b0) |  // AUIPC
       (isJALR   | isJAL    ? PCplus4    : 32'b0) |  // JAL, JALR
       (isLoad              ? LOAD_data  : 32'b0) ;  // Load
-      (isTEEEnter          ? {31'b0, is_tee} : 32'b0) | // TEE Enter return
-      (isTEEExit           ? {31'b0, is_tee} : 32'b0) ; // TEE Exit return
       
    /* verilator lint_on WIDTH */
 

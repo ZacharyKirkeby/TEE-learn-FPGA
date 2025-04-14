@@ -44,10 +44,7 @@ module FemtoRV32(
    output 	 mem_rstrb, // active to initiate memory read (used by IO)
    input 	 mem_rbusy, // asserted if memory is busy reading value
    input 	 mem_wbusy, // asserted if memory is busy writing value
-
-   output        mem_violation, // illegal TEE access
-   output        uart_output,   // logging
-
+   
    input         reset       // set to 0 to reset the processor
 
 );
@@ -60,40 +57,37 @@ module FemtoRV32(
    parameter TEE_END          = 32'h400000;
 
 /***************************************************************************/
- // TEE (i even made the silly box
- /***************************************************************************/
-// TEE state register
-(* keep = "true" *) reg is_tee;
-(* keep = "true" *) reg is_violation;
+// TEE - Trusted Execution Environment implementation
+/***************************************************************************/
 
-// Check if memory address is in the TEE zone
+reg is_tee;
+reg is_violation;
+
+wire isTEEEnter = (instr[6:0] == 7'b1111011); // 0x7b
+wire isTEEExit  = (instr[6:0] == 7'b1111111); // 0x7f
+
+wire isTEEEnter_data = (mem_wdata == 32'h0000007B);
+wire isTEEExit_data  = (mem_wdata == 32'h0000007F);
+
 wire is_tee_zone = (mem_addr >= TEE_START) && (mem_addr < TEE_END);
+wire violation = is_tee_zone && !is_tee && (isLoad || isStore);
 
-// Detect illegal access: Memory access to TEE zone when not in TEE mode
-// Only trigger during actual memory operations, not instruction fetches
-wire violation = is_tee_zone && !is_tee && state[EXECUTE_bit] && (isLoad || isStore);
-
-// Connect to module output - this signal will be connected to LEDs for warning
-assign mem_violation = is_violation;
-
-// Update TEE state registers
-always @(posedge clk) begin
-   if(!reset) begin
-      is_tee <= 1'b0;
-      is_violation <= 1'b0;
-   end else begin
-      // Set violation flag when illegal access is detected
-      if(violation) begin
-         is_violation <= 1'b1;
-      end
-
-      // Allow clearing the violation flag by writing to a specific address
-      if(state[EXECUTE_bit] && isStore && mem_addr == 32'h400004 && mem_wdata == 0) begin
-         is_violation <= 1'b0;
-      end
-   end
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        is_tee <= 1'b0;
+        is_violation <= 1'b0;
+    end else begin
+	if (isStore) begin
+            if (isTEEEnter)
+              is_tee <= 1'b1;
+            else if (isTEEExit)
+              is_tee <= 1'b0;
+        end
+        is_violation <= violation;
+    end
 end
-
+assign mem_addr  = is_violation ? 32'h400004 : mem_addr;
+assign mem_wdata = is_violation ? 32'h000003 : mem_wdata;
  /***************************************************************************/
  // Instruction decoding.
  /***************************************************************************/
@@ -125,7 +119,7 @@ end
    wire isStore   =  (instr[6:2] == 5'b01000); // mem[rs1+Simm] <- rs2
    wire isALUreg  =  (instr[6:2] == 5'b01100); // rd <- rs1 OP rs2
    wire isSYSTEM  =  (instr[6:2] == 5'b11100); // rd <- cycles
-   wire isJAL     =  instr[3]; // (instr[6:2] == 5'b11011); // rd <- PC+4; PC<-PC+Jimm
+   wire isJAL     =  (instr[6:2] == 5'b11011); // rd <- PC+4; PC<-PC+Jimm was [3];
    wire isJALR    =  (instr[6:2] == 5'b11001); // rd <- PC+4; PC<-rs1+Iimm
    wire isLUI     =  (instr[6:2] == 5'b01101); // rd <- Uimm
    wire isAUIPC   =  (instr[6:2] == 5'b00101); // rd <- PC + Uimm
